@@ -51,10 +51,10 @@ model categories {
   products     product[]
 }
 
-product's 'id' column is use to search product in price_history table with product_id
-so if you want to search product in price_history table you have to 
-pass product_id from product table
-for example,
-product's 'id' is 44892 and you want to find product in price_history table you have to pass product_id = '44892' in price_history table
+//product's 'id' column is use to search product in price_history table with product_id
+//so if you want to search product in price_history table you have to 
+//pass product_id from product table
+//for example,
+//product's 'id' is 44892 and you want to find product in price_history table you have to pass product_id = '44892' in price_history table
 
-select * from price_history where product_id='44892';
+//select * from price_history where product_id='44892';
