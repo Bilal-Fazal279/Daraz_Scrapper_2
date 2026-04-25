@@ -1,0 +1,22 @@
+{
+	"name": "daraz-scrapper",
+	"version": "1.0.0",
+	"type": "module",
+	"dependencies": {
+		"@prisma/adapter-pg": "^7.7.0",
+		"@prisma/client": "^7.7.0",
+		"apify": "^3.1.0",
+		"crawlee": "^3.5.0",
+		"dotenv": "^17.4.2",
+		"got-scraping": "^3.2.0",
+		"pg": "^8.20.0",
+		"prisma": "^7.7.0"
+	},
+	"devDependencies": {
+		"@types/pg": "^8.20.0"
+	},
+	"scripts": {
+		"start": "node src/main.js",
+		"dev": "node src/main.js"
+	}
+}

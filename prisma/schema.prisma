@@ -1,0 +1,60 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+//generator client {
+//  provider = "prisma-client"
+//  output   = "../src/generated/prisma"
+//}
+
+//datasource db {
+  //provider = "postgresql"
+//}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  //url      = env("DATABASE_URL")
+}
+
+model product {
+  id            Int             @id @default(autoincrement())
+  daraz_id      String          @unique
+  name          String
+  image_url     String?
+  product_url   String
+  current_price Float
+  updated_at    DateTime        @default(now()) @updatedAt
+  prices        price_history[]
+  category_id  Int?      // Link product to category
+  category     categories? @relation(fields: [category_id], references: [id])
+}
+
+model price_history {
+  id         Int      @id @default(autoincrement())
+  price      Float
+  created_at DateTime @default(now())
+  product_id Int
+  product    product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+}
+
+model categories {
+  id                Int      @id @default(autoincrement())
+  category_name     String
+  sub_category_name String
+  sub_category_url  String   @unique 
+  updated_at        DateTime @default(now()) @updatedAt
+  products     product[]
+}
+
+product's 'id' column is use to search product in price_history table with product_id
+so if you want to search product in price_history table you have to 
+pass product_id from product table
+for example,
+product's 'id' is 44892 and you want to find product in price_history table you have to pass product_id = '44892' in price_history table
+
+select * from price_history where product_id='44892';
