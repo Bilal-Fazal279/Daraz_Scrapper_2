@@ -198,39 +198,71 @@ const crawler = new BasicCrawler({
                     })),
                     skipDuplicates: true,
                 });
-
-                // Step B: Loop through all items to handle price changes & initial history
+                // Step B: Loop through all items to handle price changes, history, and filling NULL columns
                 let priceChangesDetected = 0;
-                let newHistoryEntries = 0; // Add this counter
+                let newHistoryEntries = 0;
+                let metadataUpdates = 0; // Counter for filled NULL columns
 
                 for (const item of products) {
                     const newPrice = parseFloat(item.price) || 0;
                     const darazId = String(item.itemId);
 
-                    // Find record to check price or check if history exists
+                    // 1. Fetch the existing record with the new columns
                     const existingRecord = await prisma.product.findUnique({
                         where: { daraz_id: darazId },
-                        select: { id: true, current_price: true }
+                        select: {
+                            id: true,
+                            current_price: true,
+                            rating_score: true,      // Check these
+                            item_sold_count: true,   // Check these
+                            review_count: true,       // Check these
+                            seller_name: true,        // Check these
+                            location: true,           // Check these
+                            category_id: true,
+                        }
                     });
 
                     if (existingRecord) {
-                        // Check if price history already exists for this product
-                        const historyExists = await prisma.price_history.findFirst({
-                            where: { product_id: existingRecord.id }
-                        });
+                        let updateData = {};
+                        let needsUpdate = false;
 
-                        // Logic: If price changed OR if this is a new product with no history yet
+                        // --- LOGIC 1: Fill missing (NULL/Zero) metadata ---
+                        // If the DB has 0 or null, but the scraper has data, add to update object
+                        if ((!existingRecord.rating_score || existingRecord.rating_score === 0) && item.ratingScore) {
+                            updateData.rating_score = parseFloat(item.ratingScore);
+                            needsUpdate = true;
+                        }
+
+                        if ((!existingRecord.item_sold_count || existingRecord.item_sold_count === "0") && item.itemSoldCntShow) {
+                            updateData.item_sold_count = String(item.itemSoldCntShow);
+                            needsUpdate = true;
+                        }
+
+                        if ((!existingRecord.review_count || existingRecord.review_count === "0") && item.review) {
+                            updateData.review_count = String(item.review);
+                            needsUpdate = true;
+                        }
+                        if ((!existingRecord.seller_name || existingRecord.seller_name === "") && item.sellerName) {
+                            updateData.seller_name = String(item.sellerName);
+                            needsUpdate = true;
+                        }
+                        if ((!existingRecord.location || existingRecord.location === "") && item.location) {
+                            updateData.location = String(item.location);
+                            needsUpdate = true;
+                        }
+                        if ((!existingRecord.category_id || existingRecord.category_id === 0) && item.category_id) {
+                            updateData.category_id = String(item.category_id);
+                            needsUpdate = true;
+                        }
+                        // --- LOGIC 2: Price Change Detection ---
                         if (existingRecord.current_price !== newPrice) {
                             priceChangesDetected++;
-                            newHistoryEntries++; // It's a change, so we add history
+                            newHistoryEntries++;
 
-                            // Update the main product price
-                            await prisma.product.update({
-                                where: { id: existingRecord.id },
-                                data: { current_price: newPrice }
-                            });
+                            updateData.current_price = newPrice;
+                            needsUpdate = true;
 
-                            // Log the change in history
+                            // Log the change in history table
                             await prisma.price_history.create({
                                 data: {
                                     price: newPrice,
@@ -238,8 +270,25 @@ const crawler = new BasicCrawler({
                                 }
                             });
                         }
-                        else if (!historyExists) {
-                            newHistoryEntries++; // It's new history for a new product
+
+                        // --- EXECUTE UPDATE IF NEEDED ---
+                        if (needsUpdate) {
+                            if (!updateData.current_price) metadataUpdates++; // Count updates that weren't just price changes
+
+                            await prisma.product.update({
+                                where: { id: existingRecord.id },
+                                data: updateData
+                            });
+                        }
+
+                        // --- LOGIC 3: Initial History Check ---
+                        // Ensure even if price hasn't changed, a new product gets at least one history entry
+                        const historyExists = await prisma.price_history.findFirst({
+                            where: { product_id: existingRecord.id }
+                        });
+
+                        if (!historyExists) {
+                            newHistoryEntries++;
                             await prisma.price_history.create({
                                 data: {
                                     price: newPrice,
@@ -258,8 +307,9 @@ const crawler = new BasicCrawler({
                 console.log(`📊 DB SYNC REPORT:`);
                 console.log(`   ✨ New Products: ${newProductsResult.count}`);
                 console.log(`   📉 Price Changes: ${priceChangesDetected}`);
-                console.log(`   📜 History Rows: ${newHistoryEntries}`); // Now you'll see the rows increasing
-                console.log(`   ⏩ Unchanged: ${products.length - (newProductsResult.count + priceChangesDetected)}`);
+                console.log(`   🛠️ Metadata Repaired: ${metadataUpdates}`); // New line
+                console.log(`   📜 History Rows: ${newHistoryEntries}`);
+                console.log(`   ⏩ Unchanged: ${products.length - (newProductsResult.count + priceChangesDetected + metadataUpdates)}`);
                 console.log(`------------------------------\n`);
 
             } catch (dbError) {
