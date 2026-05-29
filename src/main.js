@@ -92,6 +92,28 @@ import { PrismaPg } from '@prisma/adapter-pg';
 
 const { PrismaClient } = pkg;
 
+// Add this helper function at the top of your file to randomize header elements
+const platforms = ['windows', 'macintosh', 'linux'];
+
+const response = await gotScraping({
+    url: request.url,
+    headerGeneratorOptions: {
+        browsers: [
+            { name: 'chrome', minVersion: 110 },
+            { name: 'edge', minVersion: 110 },
+            { name: 'firefox', minVersion: 110 }
+        ],
+        devices: ['desktop'],
+        // Dynamically rotate underlying OS platforms to mask the GitHub virtual machine signatures
+        operatingSystems: [platforms[Math.floor(Math.random() * platforms.length)]],
+    },
+    headers: {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.daraz.pk/',
+        'Cache-Control': 'no-cache',
+    }
+});
 /**
  * 1. DATABASE CONFIGURATION
  */
@@ -149,12 +171,22 @@ const crawler = new BasicCrawler({
     maxConcurrency: 1,
 
     async requestHandler({ request }) {
+       
         const page = request.userData?.page || 1;
         const retryCount = request.retryCount || 0;
 
-        const baseDelay = 3000 + Math.random() * 3000; // Increased delay buffer slightly for safety against anti-bot triggers
-        const penaltyDelay = retryCount * 12000;
+        // Standard delay for initial pages
+        let baseDelay = 3000 + Math.random() * 3000;
+
+        // 💡 DEEP-PAGE BACKOFF: If we're deep into pagination, act much slower and more random
+        if (page > 40) {
+            console.log(`🐢 Deep page detected (${page}). Applying extra stealth delay rules...`);
+            baseDelay = 8000 + Math.random() * 7000; // 8 to 15-second gap per page
+        }
+
+        const penaltyDelay = retryCount * 15000; // Increase penalty for retries
         const totalDelay = baseDelay + penaltyDelay;
+
         console.log(`🌐 [Page ${page}] Delaying ${Math.round(totalDelay)}ms (Retry: ${retryCount})...`);
         await sleep(totalDelay);
 
