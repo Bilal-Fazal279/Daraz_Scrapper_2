@@ -2,14 +2,29 @@ name: SastaDost Free Scraper
 
 on:
   schedule:
-    - cron: '0 */1 * * *' # Runs every 1 hour
+    # 💡 Changed from '0 */1 * * *' to '37 */2 * * *'
+    # High-load times at the top of the hour cause massive delays on GitHub's shared queue.
+    # Offsetting to minute 37 and running every 2 hours makes execution dramatically more reliable.
+    - cron: '37 */2 * * *' 
   workflow_dispatch:      # Allows you to click "Run Workflow" manually
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    
+    # ⚡ The Build Matrix Strategy
+    # Splitting 550 categories into 4 parallel structural batches.
+    # Worker 1 tackles chunk_1, Worker 2 tackles chunk_2, etc., executing concurrently!
+    strategy:
+      fail-fast: false     # Prevents one failing chunk from crashing the other active scraper instances
+      matrix:
+        chunk: [1, 2, 3, 4]
+
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Pass the specific instance identifier down to your node engine
+      SCRAPER_CHUNK: ${{ matrix.chunk }}
+      TOTAL_CHUNKS: 4
     
     steps:
       - name: Checkout Code
@@ -19,6 +34,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm' # Speeds up execution by caching node_modules across runs
 
       - name: Install Dependencies
         run: npm install
@@ -26,5 +42,37 @@ jobs:
       - name: Generate Prisma Client
         run: npx prisma generate
 
-      - name: Run Scraper
+      - name: Run Parallel Scraper Chunks
+        # Your main script reads the environment variables to know exactly which subset to parse
         run: node src/main.js
+
+# name: SastaDost Free Scraper
+
+# on:
+#   schedule:
+#     - cron: '0 */1 * * *' # Runs every 1 hour
+#   workflow_dispatch:      # Allows you to click "Run Workflow" manually
+
+# jobs:
+#   scrape:
+#     runs-on: ubuntu-latest
+#     env:
+#       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    
+#     steps:
+#       - name: Checkout Code
+#         uses: actions/checkout@v4
+
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: '22'
+
+#       - name: Install Dependencies
+#         run: npm install
+
+#       - name: Generate Prisma Client
+#         run: npx prisma generate
+
+#       - name: Run Scraper
+#         run: node src/main.js
