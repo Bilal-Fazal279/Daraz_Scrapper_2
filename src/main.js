@@ -488,7 +488,7 @@ const buildDarazUrl = (baseUrl, pageNum) => {
 };
 
 // Platforms helper for browser rotation
-const platforms = ['windows', 'macintosh', 'linux'];
+const platforms = ['windows', 'macos', 'linux'];
 
 const crawler = new BasicCrawler({
     requestHandlerTimeoutSecs: 300,
