@@ -3,7 +3,8 @@ name: SastaDost Free Scraper
 on:
   schedule:
     # - cron: '0 */1 * * *' # Runs every 1 hour
-    - cron: '*/10 * * * *' # Runs every 10 minutes
+    - cron: '*/10 * * * *' # Runs every 10 minutes 
+    
   workflow_dispatch:      # Allows you to click "Run Workflow" manually
 
 jobs:
