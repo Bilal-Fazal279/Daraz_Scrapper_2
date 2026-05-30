@@ -112,7 +112,7 @@ await Actor.init();
  * Fixes concurrency: Marks category instantly so parallel scrapers skip it.
  */
 let categoryToScrape = null;
-
+ 
 try {
     // Wrap selection and immediate update inside an atomic transaction
     categoryToScrape = await prisma.$transaction(async (tx) => {
