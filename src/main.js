@@ -82,7 +82,6 @@
 // await Actor.exit();
 ////////////////////////////////////////////////////
 
-
 import 'dotenv/config';
 import { Actor } from 'apify';
 import { BasicCrawler, sleep } from 'crawlee';
@@ -109,37 +108,69 @@ const prisma = new PrismaClient({ adapter });
 await Actor.init();
 
 /**
- * 2. DYNAMIC INPUT HANDLING
+ * 2. DYNAMIC INPUT HANDLING WITH IMMEDIATE ATOMIC LOCKING
+ * Fixes concurrency: Marks category instantly so parallel scrapers skip it.
  */
-const categoryToScrape = await prisma.categories.findFirst({
-    orderBy: [
-        { updated_at: 'asc' },
-        { id: 'asc' }
-    ],
-});
+let categoryToScrape = null;
 
-if (!categoryToScrape) {
-    console.log("⚠️ No categories found in the database.");
-    await Actor.exit();
+try {
+    // Wrap selection and immediate update inside an atomic transaction
+    categoryToScrape = await prisma.$transaction(async (tx) => {
+        const selected = await tx.categories.findFirst({
+            orderBy: [
+                { updated_at: 'asc' },
+                { id: 'asc' }
+            ],
+        });
+
+        if (!selected) return null;
+
+        // Immediately update updated_at to NOW to lock it out for other scrapers
+        const lockedCategory = await tx.categories.update({
+            where: { id: selected.id },
+            data: { updated_at: new Date() }
+        });
+
+        return lockedCategory;
+    });
+} catch (lockError) {
+    console.error("❌ Failed to secure an atomic category lock:", lockError.message);
 }
 
-console.log(`🚀 Selected Category : ${categoryToScrape.sub_category_name} (ID: ${categoryToScrape.id})`);
+if (!categoryToScrape) {
+    console.log("⚠️ No categories found in the database or all are currently locked.");
+    await prisma.$disconnect();
+    await pool.end();
+    await Actor.exit();
+    process.exit(0);
+}
+
+console.log(`🚀 Locked & Selected Category : ${categoryToScrape.sub_category_name} (ID: ${categoryToScrape.id})`);
+
 const buildDarazUrl = (baseUrl, pageNum) => {
     const connector = baseUrl.includes('?') ? '&' : '?';
     const cleanUrl = baseUrl.startsWith('//') ? `https:${baseUrl}` : baseUrl;
     return `${cleanUrl}${connector}ajax=true&page=${pageNum}`;
 };
 
+const platforms = ['windows', 'macos', 'linux'];
+
 const crawler = new BasicCrawler({
-    requestHandlerTimeoutSecs: 300, // Increased for history processing
+    requestHandlerTimeoutSecs: 300, 
     maxConcurrency: 1,
 
     async requestHandler({ request }) {
         const page = request.userData?.page || 1;
         const retryCount = request.retryCount || 0;
 
-        const baseDelay = 2000 + Math.random() * 2000;
-        const penaltyDelay = retryCount * 10000;
+        // Deep-page backoff strategy to reduce anti-bot triggering
+        let baseDelay = 3000 + Math.random() * 3000;
+        if (page > 40) {
+            console.log(`🐢 Deep page detected (${page}). Applying extra stealth delay rules...`);
+            baseDelay = 8000 + Math.random() * 7000;
+        }
+
+        const penaltyDelay = retryCount * 15000;
         const totalDelay = baseDelay + penaltyDelay;
         console.log(`🌐 [Page ${page}] Delaying ${Math.round(totalDelay)}ms (Retry: ${retryCount})...`);
         await sleep(totalDelay);
@@ -149,11 +180,19 @@ const crawler = new BasicCrawler({
                 url: request.url,
                 headerGeneratorOptions: {
                     browsers: [
-                        { name: 'chrome', minVersion: 100 },
-                        { name: 'firefox', minVersion: 100 }
+                        { name: 'chrome', minVersion: 110 },
+                        { name: 'edge', minVersion: 110 },
+                        { name: 'firefox', minVersion: 110 }
                     ],
                     devices: ['desktop'],
+                    operatingSystems: [platforms[Math.floor(Math.random() * platforms.length)]],
                 },
+                headers: {
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.daraz.pk/',
+                    'Cache-Control': 'no-cache',
+                }
             });
 
             const contentType = response.headers['content-type'] || '';
@@ -167,6 +206,7 @@ const crawler = new BasicCrawler({
 
             if (products.length === 0) {
                 console.log(`⚠️ No products found on page ${page}. Closing category.`);
+                // Timestamp already bumped at start, keeping this to refresh final state
                 await prisma.categories.update({
                     where: { id: categoryToScrape.id },
                     data: { updated_at: new Date() }
@@ -180,7 +220,6 @@ const crawler = new BasicCrawler({
              * 3. INTELLIGENT SYNC & HISTORY LOGGING
              */
             try {
-                // Step A: Attempt to create new products in bulk (will skip if daraz_id exists)
                 const newProductsResult = await prisma.product.createMany({
                     data: products.map(item => ({
                         daraz_id: String(item.itemId),
@@ -192,32 +231,31 @@ const crawler = new BasicCrawler({
                         review_count: item.review ? String(item.review) : "0",
                         seller_name: item.sellerName || "Unknown Seller",
                         location: item.location || " ",
-                        item_sold_count: String(item.itemSoldCntShow || "0"), // Stored as TEXT
+                        item_sold_count: String(item.itemSoldCntShow || "0"), 
                         category_id: categoryToScrape.id,
                         store: "daraz"
                     })),
                     skipDuplicates: true,
                 });
-                // Step B: Loop through all items to handle price changes, history, and filling NULL columns
+
                 let priceChangesDetected = 0;
                 let newHistoryEntries = 0;
-                let metadataUpdates = 0; // Counter for filled NULL columns
+                let metadataUpdates = 0; 
 
                 for (const item of products) {
                     const newPrice = parseFloat(item.price) || 0;
                     const darazId = String(item.itemId);
 
-                    // 1. Fetch the existing record with the new columns
                     const existingRecord = await prisma.product.findUnique({
                         where: { daraz_id: darazId },
                         select: {
                             id: true,
                             current_price: true,
-                            rating_score: true,      // Check these
-                            item_sold_count: true,   // Check these
-                            review_count: true,       // Check these
-                            seller_name: true,        // Check these
-                            location: true,           // Check these
+                            rating_score: true,      
+                            item_sold_count: true,   
+                            review_count: true,       
+                            seller_name: true,        
+                            location: true,           
                             category_id: true,
                         }
                     });
@@ -226,18 +264,14 @@ const crawler = new BasicCrawler({
                         let updateData = {};
                         let needsUpdate = false;
 
-                        // --- LOGIC 1: Fill missing (NULL/Zero) metadata ---
-                        // If the DB has 0 or null, but the scraper has data, add to update object
                         if ((!existingRecord.rating_score || existingRecord.rating_score === 0) && item.ratingScore) {
                             updateData.rating_score = parseFloat(item.ratingScore);
                             needsUpdate = true;
                         }
-
                         if ((!existingRecord.item_sold_count || existingRecord.item_sold_count === "0") && item.itemSoldCntShow) {
                             updateData.item_sold_count = String(item.itemSoldCntShow);
                             needsUpdate = true;
                         }
-
                         if ((!existingRecord.review_count || existingRecord.review_count === "0") && item.review) {
                             updateData.review_count = String(item.review);
                             needsUpdate = true;
@@ -254,15 +288,13 @@ const crawler = new BasicCrawler({
                             updateData.category_id = String(item.category_id);
                             needsUpdate = true;
                         }
-                        // --- LOGIC 2: Price Change Detection ---
+
                         if (existingRecord.current_price !== newPrice) {
                             priceChangesDetected++;
                             newHistoryEntries++;
-
                             updateData.current_price = newPrice;
                             needsUpdate = true;
 
-                            // Log the change in history table
                             await prisma.price_history.create({
                                 data: {
                                     price: newPrice,
@@ -271,18 +303,14 @@ const crawler = new BasicCrawler({
                             });
                         }
 
-                        // --- EXECUTE UPDATE IF NEEDED ---
                         if (needsUpdate) {
-                            if (!updateData.current_price) metadataUpdates++; // Count updates that weren't just price changes
-
+                            if (!updateData.current_price) metadataUpdates++; 
                             await prisma.product.update({
                                 where: { id: existingRecord.id },
                                 data: updateData
                             });
                         }
 
-                        // --- LOGIC 3: Initial History Check ---
-                        // Ensure even if price hasn't changed, a new product gets at least one history entry
                         const historyExists = await prisma.price_history.findFirst({
                             where: { product_id: existingRecord.id }
                         });
@@ -303,12 +331,11 @@ const crawler = new BasicCrawler({
                     console.log(`📉 Price updates logged for ${priceChangesDetected} items.`);
                 }
 
-                // Update your console log to show the history count:
                 console.log(`📊 DB SYNC REPORT:`);
                 console.log(`   ✨ New Products: ${newProductsResult.count}`);
                 console.log(`   📉 Price Changes: ${priceChangesDetected}`);
-                console.log(`   🛠️ Metadata Repaired: ${metadataUpdates}`); // New line
-                console.log(`   📜 History Rows: ${newHistoryEntries}`);
+                console.log(`   🛠️ Metadata Repaired: ${metadataUpdates}`); 
+                console.log(`   ** History Rows: ${newHistoryEntries}`);
                 console.log(`   ⏩ Unchanged: ${products.length - (newProductsResult.count + priceChangesDetected + metadataUpdates)}`);
                 console.log(`------------------------------\n`);
 
